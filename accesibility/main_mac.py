@@ -4,67 +4,42 @@ from collections import deque
 import numpy as np
 import sys
 import time
+import platform
 
-def check_available_cameras():
-    """Check all available camera indices"""
-    available_cameras = []
-    for i in range(10):  # Check first 10 indices
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            ret, _ = cap.read()
-            if ret:
-                available_cameras.append(i)
-            cap.release()
-    return available_cameras
-
-def initialize_camera(camera_index=0, attempts=3):
-    """Initialize camera with multiple attempts and detailed error checking"""
-    for attempt in range(attempts):
-        print(f"Attempting to initialize camera {camera_index} (attempt {attempt + 1}/{attempts})")
-        
-        cap = cv2.VideoCapture(camera_index)
+def initialize_camera_mac():
+    """Initialize camera specifically for MacOS"""
+    # Try different camera APIs
+    apis = [cv2.CAP_AVFOUNDATION, cv2.CAP_ANY]
+    
+    for api in apis:
+        print(f"Intentando inicializar cámara con API: {api}")
+        cap = cv2.VideoCapture(0 + api)
         
         if not cap.isOpened():
-            print(f"Failed to open camera {camera_index}")
-            if attempt < attempts - 1:
-                print("Retrying in 2 seconds...")
-                time.sleep(2)
-                continue
+            print(f"No se pudo abrir la cámara con API {api}")
+            continue
             
-            # Check for other available cameras
-            available_cameras = check_available_cameras()
-            if available_cameras:
-                print(f"Available cameras found at indices: {available_cameras}")
-                print(f"Try running the program with a different camera index.")
-            else:
-                print("No available cameras found.")
-            
-            raise RuntimeError(f"""
-Camera initialization failed after {attempts} attempts.
-Please check:
-1. Camera is properly connected
-2. Camera permissions are granted
-3. No other application is using the camera
-4. Correct camera index is being used
-""")
+        # Set camera properties
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         
         # Test reading a frame
         ret, frame = cap.read()
-        if not ret or frame is None:
-            print("Camera opened but failed to read frame")
-            cap.release()
-            if attempt < attempts - 1:
-                print("Retrying in 2 seconds...")
-                time.sleep(2)
-                continue
-            raise RuntimeError("Camera opened but cannot read frames")
-        
-        # If we got here, camera is working
-        print(f"Successfully initialized camera {camera_index}")
-        print(f"Frame size: {frame.shape}")
-        return cap
+        if ret and frame is not None:
+            print(f"Cámara inicializada exitosamente con API {api}")
+            print(f"Resolución: {frame.shape}")
+            return cap
+            
+        cap.release()
     
-    raise RuntimeError("Failed to initialize camera after all attempts")
+    raise RuntimeError("""
+No se pudo inicializar la cámara. Por favor verifica:
+1. Que la cámara está conectada
+2. Que has dado permisos de cámara a la Terminal/IDE
+   - Ve a Preferencias del Sistema > Seguridad y Privacidad > Privacidad > Cámara
+   - Activa el permiso para Terminal o tu IDE
+3. Que ninguna otra aplicación está usando la cámara
+""")
 
 def detectar_manos(imagen, hands):
     """Detect hands in image with error handling"""
@@ -90,29 +65,55 @@ def obtener_puntos_referencia(imagen, resultados):
     return puntos_normalizados
 
 def clasificar_gesto(puntos_normalizados, gestos, historial_puntos):
-    """Classify gesture with validation"""
+    """
+    Classify hand gesture based on finger positions and movement
+    Args:
+        puntos_normalizados: List of normalized finger tip coordinates
+        gestos: Dictionary of gesture definitions
+        historial_puntos: Deque of historical points
+    Returns:
+        str: Detected gesture name or None
+    """
     if not puntos_normalizados or not historial_puntos:
         return None
         
-    gesto_detectado = None
     if len(historial_puntos) == historial_puntos.maxlen and len(puntos_normalizados) == 5:
         try:
-            velocidades = []
-            for i in range(len(puntos_normalizados)):
-                velocidad = np.linalg.norm(np.array(historial_puntos[-1][i]) - np.array(historial_puntos[0][i]))
-                velocidades.append(velocidad)
+            # Calcular posiciones relativas de los dedos respecto al pulgar
+            pulgar = np.array(puntos_normalizados[0])
+            dedos_levantados = []
             
+            # Por cada dedo (excluyendo el pulgar)
+            for i in range(1, 5):
+                dedo = np.array(puntos_normalizados[i])
+                
+                # Calcular la distancia vertical entre la punta del dedo y el pulgar
+                distancia_vertical = pulgar[1] - dedo[1]
+                
+                # Un dedo se considera "levantado" si está más arriba que el pulgar
+                # y la distancia vertical es significativa
+                umbral_distancia = 30
+                dedo_levantado = distancia_vertical > umbral_distancia
+                dedos_levantados.append(1 if dedo_levantado else 0)
+            
+            # El pulgar se procesa de manera diferente
+            # Se considera levantado si está significativamente a la izquierda o derecha
+            dedo_pulgar = np.array(puntos_normalizados[0])
+            centro_mano = np.mean([np.array(p) for p in puntos_normalizados[1:]], axis=0)
+            distancia_horizontal = abs(dedo_pulgar[0] - centro_mano[0])
+            pulgar_levantado = distancia_horizontal > 50
+            dedos_estado = [1 if pulgar_levantado else 0] + dedos_levantados
+            
+            # Comparar con los gestos definidos
             for gesto, valores in gestos.items():
-                umbral_velocidad = 5  # Ajustar según sea necesario
-                if all(velocidad < umbral_velocidad if valor == 0 else velocidad > umbral_velocidad 
-                      for velocidad, valor in zip(velocidades, valores)):
-                    gesto_detectado = gesto
-                    break
+                if dedos_estado == valores:
+                    return gesto
+                    
         except Exception as e:
             print(f"Error al clasificar gesto: {e}")
             return None
             
-    return gesto_detectado
+    return None
 
 def mostrar_resultado(imagen, gesto_detectado, puntos_normalizados, resultados, mp_hands, mp_drawing=None):
     """Display results with error handling"""
@@ -143,6 +144,11 @@ def mostrar_resultado(imagen, gesto_detectado, puntos_normalizados, resultados, 
     return imagen_output
 
 def main():
+    # Verificar sistema operativo
+    if platform.system() != "Darwin":
+        print("Este script está optimizado para macOS")
+        sys.exit(1)
+
     # Initialize MediaPipe
     mp_hands = mp.solutions.hands
     mp_drawing = mp.solutions.drawing_utils
@@ -165,45 +171,45 @@ def main():
     historial_puntos = deque(maxlen=10)
 
     try:
-        # Check available cameras first
-        available_cameras = check_available_cameras()
-        if not available_cameras:
-            raise RuntimeError("No cameras available on the system")
-        print(f"Available cameras: {available_cameras}")
+        # Inicializar la cámara usando el método específico para macOS
+        cap = initialize_camera_mac()
         
-        # Try to initialize the first available camera
-        camera_index = available_cameras[0]
-        cap = initialize_camera(camera_index)
-        
-        # Configurar la detección de manos
+        # Configurar la detección de manos con umbrales ajustados
         with mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
+            min_detection_confidence=0.7,  # Aumentado para mayor precisión
+            min_tracking_confidence=0.7    # Aumentado para mayor precisión
         ) as hands:
             
             print("Iniciando reconocimiento de gestos. Presione 'q' para salir.")
             
             frame_count = 0
             start_time = time.time()
+            last_frame_time = time.time()
             
             while True:
+                # Control de FPS para macOS
+                current_time = time.time()
+                if (current_time - last_frame_time) < 1/30.0:  # Limitar a 30 FPS
+                    continue
+                last_frame_time = current_time
+                
                 # Leer un frame del video
                 ret, frame = cap.read()
                 if not ret or frame is None:
                     print("Error al leer frame de la cámara")
-                    print(f"Camera status - isOpened: {cap.isOpened()}")
-                    # Try to reinitialize camera
+                    print("Intentando reiniciar la cámara...")
                     cap.release()
                     try:
-                        cap = initialize_camera(camera_index)
+                        cap = initialize_camera_mac()
                         continue
-                    except RuntimeError:
+                    except RuntimeError as e:
+                        print(f"No se pudo reiniciar la cámara: {e}")
                         break
 
                 frame_count += 1
-                if frame_count % 30 == 0:  # Calculate FPS every 30 frames
+                if frame_count % 30 == 0:  # Calcular FPS cada 30 frames
                     fps = frame_count / (time.time() - start_time)
                     print(f"FPS: {fps:.2f}")
 
