@@ -7,3 +7,5 @@ obtener_puntos_referencia: Extraerá las coordenadas de los puntos de referencia
 clasificar_gesto: Determinará el gesto en función de los puntos de referencia.
 
 mostrar_resultado: Mostrará el resultado en la imagen. 
+
+Considerar cambiar a YOLO5, probar mediapipe antes
