@@ -1,0 +1,28 @@
+{
+    "name": "Reconocimiento de Gestos",
+    "dockerFile": "Dockerfile",
+
+    // Configuraciones adicionales (opcional)
+    "settings": {
+        "python.linting.enabled": true,
+        "python.linting.pylintEnabled": true
+    },
+
+    // Extensiones a instalar en el contenedor (opcional)
+    "extensions": [
+        "ms-python.python"
+    ],
+
+    // Comandos a ejecutar después de crear el contenedor (opcional)
+    "postCreateCommand": "pip install --upgrade pip",
+
+    // Mapear puertos (opcional)
+    "forwardPorts": [8080],
+
+    // Características adicionales (opcional)
+    "features": {
+        "ghcr.io/devcontainers/features/node": {
+            "version": "latest"
+        }
+    }
+}
