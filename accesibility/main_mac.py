@@ -8,7 +8,6 @@ import platform
 
 def initialize_camera_mac():
     """Initialize camera specifically for MacOS"""
-    # Try different camera APIs
     apis = [cv2.CAP_AVFOUNDATION, cv2.CAP_ANY]
     
     for api in apis:
@@ -19,11 +18,9 @@ def initialize_camera_mac():
             print(f"No se pudo abrir la cámara con API {api}")
             continue
             
-        # Set camera properties
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         
-        # Test reading a frame
         ret, frame = cap.read()
         if ret and frame is not None:
             print(f"Cámara inicializada exitosamente con API {api}")
@@ -64,55 +61,82 @@ def obtener_puntos_referencia(imagen, resultados):
                 puntos_normalizados.append((x, y))
     return puntos_normalizados
 
+def calcular_movimiento(historial_puntos, ventana=5):
+    """
+    Calcula el tipo y magnitud del movimiento basado en el historial de puntos
+    Returns:
+        tuple: (movimiento_vertical, movimiento_horizontal, es_circular)
+    """
+    if len(historial_puntos) < ventana:
+        return 0, 0, False
+        
+    # Obtener los últimos puntos del historial
+    puntos_recientes = [np.mean([np.array(p) for p in frame], axis=0) 
+                       for frame in list(historial_puntos)[-ventana:]]
+    
+    # Calcular movimientos
+    movimientos_verticales = [abs(puntos_recientes[i+1][1] - puntos_recientes[i][1]) 
+                            for i in range(len(puntos_recientes)-1)]
+    movimientos_horizontales = [abs(puntos_recientes[i+1][0] - puntos_recientes[i][0]) 
+                              for i in range(len(puntos_recientes)-1)]
+    
+    # Calcular promedios de movimiento
+    mov_vertical = np.mean(movimientos_verticales)
+    mov_horizontal = np.mean(movimientos_horizontales)
+    
+    # Detectar movimiento circular
+    variacion_x = np.std([p[0] for p in puntos_recientes])
+    variacion_y = np.std([p[1] for p in puntos_recientes])
+    es_circular = variacion_x > 15 and variacion_y > 15
+    
+    return mov_vertical, mov_horizontal, es_circular
+
 def clasificar_gesto(puntos_normalizados, gestos, historial_puntos):
     """
     Classify hand gesture based on finger positions and movement
-    Args:
-        puntos_normalizados: List of normalized finger tip coordinates
-        gestos: Dictionary of gesture definitions
-        historial_puntos: Deque of historical points
-    Returns:
-        str: Detected gesture name or None
     """
-    if not puntos_normalizados or not historial_puntos:
+    if not puntos_normalizados or not historial_puntos or len(puntos_normalizados) != 5:
         return None
         
-    if len(historial_puntos) == historial_puntos.maxlen and len(puntos_normalizados) == 5:
-        try:
-            # Calcular posiciones relativas de los dedos respecto al pulgar
-            pulgar = np.array(puntos_normalizados[0])
-            dedos_levantados = []
-            
-            # Por cada dedo (excluyendo el pulgar)
-            for i in range(1, 5):
-                dedo = np.array(puntos_normalizados[i])
+    try:
+        # Calcular estado de los dedos
+        pulgar = np.array(puntos_normalizados[0])
+        centro_mano = np.mean([np.array(p) for p in puntos_normalizados[1:]], axis=0)
+        
+        # Analizar posición del pulgar
+        distancia_horizontal = abs(pulgar[0] - centro_mano[0])
+        pulgar_levantado = distancia_horizontal > 50
+        
+        # Analizar resto de dedos
+        dedos_levantados = []
+        for i in range(1, 5):
+            dedo = np.array(puntos_normalizados[i])
+            distancia_vertical = pulgar[1] - dedo[1]
+            dedo_levantado = distancia_vertical > 30
+            dedos_levantados.append(1 if dedo_levantado else 0)
+        
+        # Combinar estado de todos los dedos
+        dedos_estado = [1 if pulgar_levantado else 0] + dedos_levantados
+        
+        # Obtener información de movimiento
+        mov_vertical, mov_horizontal, es_circular = calcular_movimiento(historial_puntos)
+        
+        # Detectar gestos del lenguaje de señas
+        if dedos_estado == [0, 0, 0, 0, 0] and mov_vertical > 20:  # Puño con movimiento vertical
+            return "sí"
+        elif dedos_estado == [0, 1, 1, 0, 0] and mov_horizontal > 20:  # Dos dedos con movimiento horizontal
+            return "no"
+        elif dedos_estado == [0, 1, 0, 0, 0] and es_circular:  # Índice con movimiento circular
+            return "repetir"
+        
+        # Si no es un gesto de señas, verificar otros gestos
+        for gesto, valores in gestos.items():
+            if dedos_estado == valores:
+                return gesto
                 
-                # Calcular la distancia vertical entre la punta del dedo y el pulgar
-                distancia_vertical = pulgar[1] - dedo[1]
-                
-                # Un dedo se considera "levantado" si está más arriba que el pulgar
-                # y la distancia vertical es significativa
-                umbral_distancia = 30
-                dedo_levantado = distancia_vertical > umbral_distancia
-                dedos_levantados.append(1 if dedo_levantado else 0)
-            
-            # El pulgar se procesa de manera diferente
-            # Se considera levantado si está significativamente a la izquierda o derecha
-            dedo_pulgar = np.array(puntos_normalizados[0])
-            centro_mano = np.mean([np.array(p) for p in puntos_normalizados[1:]], axis=0)
-            distancia_horizontal = abs(dedo_pulgar[0] - centro_mano[0])
-            pulgar_levantado = distancia_horizontal > 50
-            dedos_estado = [1 if pulgar_levantado else 0] + dedos_levantados
-            
-            # Comparar con los gestos definidos
-            for gesto, valores in gestos.items():
-                if dedos_estado == valores:
-                    return gesto
-                    
-        except Exception as e:
-            print(f"Error al clasificar gesto: {e}")
-            return None
-            
+    except Exception as e:
+        print(f"Error al clasificar gesto: {e}")
+        
     return None
 
 def mostrar_resultado(imagen, gesto_detectado, puntos_normalizados, resultados, mp_hands, mp_drawing=None):
@@ -133,7 +157,7 @@ def mostrar_resultado(imagen, gesto_detectado, puntos_normalizados, resultados, 
     if gesto_detectado:
         cv2.putText(
             imagen_output,
-            gesto_detectado,
+            f"Gesto: {gesto_detectado}",
             (50, 50),
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
@@ -155,47 +179,43 @@ def main():
 
     # Definir los gestos a reconocer
     gestos = {
-        "puño": [0, 0, 0, 0, 0],
         "mano abierta": [1, 1, 1, 1, 1],
         "pulgar arriba": [1, 0, 0, 0, 0],
-        "índice arriba": [0, 1, 0, 0, 0],
-        "dos dedos": [0, 1, 1, 0, 0],
         "tres dedos": [0, 1, 1, 1, 0],
         "cuatro dedos": [0, 1, 1, 1, 1],
-        "ok": [1, 0, 0, 1, 1],
-        "pistola": [0, 1, 0, 0, 1],
-        "rock": [0, 1, 1, 0, 1],
+        "ok": [1, 0, 0, 1, 1]
     }
 
-    # Inicializar la cola para el historial de puntos de referencia
-    historial_puntos = deque(maxlen=10)
+    # Inicializar la cola para el historial de puntos
+    historial_puntos = deque(maxlen=15)
 
     try:
-        # Inicializar la cámara usando el método específico para macOS
         cap = initialize_camera_mac()
         
-        # Configurar la detección de manos con umbrales ajustados
         with mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
-            min_detection_confidence=0.7,  # Aumentado para mayor precisión
-            min_tracking_confidence=0.7    # Aumentado para mayor precisión
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.7
         ) as hands:
             
-            print("Iniciando reconocimiento de gestos. Presione 'q' para salir.")
+            print("\nIniciando reconocimiento de gestos del lenguaje de señas")
+            print("\nGestos disponibles:")
+            print("- 'sí': puño con movimiento vertical")
+            print("- 'no': dos dedos (índice y medio) con movimiento horizontal")
+            print("- 'repetir': índice con movimiento circular")
+            print("\nPresione 'q' para salir")
             
             frame_count = 0
             start_time = time.time()
             last_frame_time = time.time()
             
             while True:
-                # Control de FPS para macOS
                 current_time = time.time()
                 if (current_time - last_frame_time) < 1/30.0:  # Limitar a 30 FPS
                     continue
                 last_frame_time = current_time
                 
-                # Leer un frame del video
                 ret, frame = cap.read()
                 if not ret or frame is None:
                     print("Error al leer frame de la cámara")
@@ -209,29 +229,25 @@ def main():
                         break
 
                 frame_count += 1
-                if frame_count % 30 == 0:  # Calcular FPS cada 30 frames
+                if frame_count % 30 == 0:  # Mostrar FPS cada 30 frames
                     fps = frame_count / (time.time() - start_time)
                     print(f"FPS: {fps:.2f}")
 
-                # Detectar manos
+                # Procesar frame
                 resultados = detectar_manos(frame, hands)
-
-                # Obtener puntos de referencia
                 puntos_normalizados = obtener_puntos_referencia(frame, resultados)
 
-                # Agregar puntos al historial si existen
                 if puntos_normalizados:
                     historial_puntos.append(puntos_normalizados)
 
-                # Clasificar gesto
+                # Clasificar y mostrar gesto
                 gesto = clasificar_gesto(puntos_normalizados, gestos, historial_puntos)
-
-                # Mostrar resultado
-                imagen_procesada = mostrar_resultado(frame, gesto, puntos_normalizados, resultados, mp_hands, mp_drawing)
+                imagen_procesada = mostrar_resultado(frame, gesto, puntos_normalizados, 
+                                                  resultados, mp_hands, mp_drawing)
+                
                 if imagen_procesada is not None:
-                    cv2.imshow('Reconocimiento de Gestos', imagen_procesada)
+                    cv2.imshow('Reconocimiento de Gestos en Lenguaje de Señas', imagen_procesada)
 
-                # Salir si se presiona la tecla 'q'
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
 
@@ -242,11 +258,10 @@ def main():
         sys.exit(1)
         
     finally:
-        # Limpieza
         if 'cap' in locals():
             cap.release()
         cv2.destroyAllWindows()
-        print("Programa finalizado")
+        print("\nPrograma finalizado")
 
 if __name__ == "__main__":
     main()
